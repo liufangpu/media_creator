@@ -113,8 +113,20 @@ export const parseMarkdown = (markdown: string, theme: ThemeType = 'tech', place
     });
   });
 
+  // --- 5.5 标题格式标准化预处理 ---
+  // 修复 AI 输出的非标准 Markdown 标题格式，确保 marked 能正确解析
+  // 场景1: "#标题" → "# 标题"（缺少空格）
+  // 场景2: "# #标题" → "# 标题"（多余的 # 号）
+  // 场景3: "## ##标题" → "## 标题"（小标题也可能出现类似问题）
+  cleanMarkdown = cleanMarkdown.replace(/^(#{1,6})\s*#*\s*(?!#)/gm, '$1 ');
+
   // 先用原生的 marked 渲染出最干净的 HTML
   let rawHtml = marked.parse(cleanMarkdown) as string;
+
+  // --- 后处理：清除 marked 遗漏的孤立 # 号 ---
+  // 如果 AI 在正文中输出了独立的 # 符号（不是标题，也不是话题标签）
+  // 在最终 HTML 中移除段落开头的残留 # 号
+  rawHtml = rawHtml.replace(/(<(?:p|h[1-6])[^>]*>)\s*#{1,6}\s+/g, '$1');
 
   // 后处理：替换各个标签，注入我们在 themes 字典里写好的内联样式
   // 替换段落 <p>

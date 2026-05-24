@@ -5,6 +5,7 @@ import OpenAI from 'openai';
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY || '',
   baseURL: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+  timeout: 25000, // 设置 25 秒超时，防止大模型接口挂起
 });
 
 export async function POST(req: Request) {
@@ -34,7 +35,8 @@ export async function POST(req: Request) {
 
       const pexelsRes = await axios.get(`https://api.pexels.com/v1/search`, {
         params: { query: searchKeyword, per_page: 4, orientation: 'landscape' },
-        headers: { Authorization: process.env.PEXELS_API_KEY }
+        headers: { Authorization: process.env.PEXELS_API_KEY },
+        timeout: 10000, // 10 秒超时
       });
 
       if (pexelsRes.data.photos && pexelsRes.data.photos.length > 0) {
@@ -86,7 +88,8 @@ export async function POST(req: Request) {
           headers: {
             'Authorization': `Bearer ${process.env.SILICONFLOW_API_KEY}`,
             'Content-Type': 'application/json'
-          }
+          },
+          timeout: 25000, // 生图设置 25 秒超时
         }
       );
 
@@ -110,6 +113,10 @@ export async function POST(req: Request) {
 
   } catch (error: any) {
     console.error('搜图/生图 API 报错:', error);
-    return NextResponse.json({ error: error.message || '内部服务器错误' }, { status: 500 });
+    let errMsg = error.message || '内部服务器错误';
+    if (error.name === 'APITimeoutError' || errMsg.includes('timeout') || errMsg.includes('delay') || error.code === 'ETIMEDOUT') {
+      errMsg = '图片服务请求超时。当前服务商接口较慢或处于高峰期，请重试。';
+    }
+    return NextResponse.json({ error: errMsg }, { status: 500 });
   }
 }
