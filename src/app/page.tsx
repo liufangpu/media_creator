@@ -39,6 +39,9 @@ export default function Home() {
   const [inputText, setInputText] = useState('');
   const [polishLevel, setPolishLevel] = useState<PolishLevel>('none');
   const [platform, setPlatform] = useState<PlatformType>('wechat');
+  const [humanize, setHumanize] = useState(false);
+  const [isHumanizing, setIsHumanizing] = useState(false);
+  const isHumanizingRef = useRef(false);
 
   // 2. 按平台隔离的映射字典（状态提升与各端隔离）
   const [htmlOutputs, setHtmlOutputs] = useState<Record<PlatformType, string>>({
@@ -101,7 +104,10 @@ export default function Home() {
   // 4. 当 Markdown、排版风格或拖放配图变化时，重新渲染当前平台的 HTML
   useEffect(() => {
     if (!rawMarkdown) {
-      setHtmlOutputs((prev) => ({ ...prev, [platform]: '' }));
+      // 人性化阶段不清空预览，保持显示 AI 原始内容直到人性化版本就绪
+      if (!isHumanizingRef.current) {
+        setHtmlOutputs((prev) => ({ ...prev, [platform]: '' }));
+      }
       return;
     }
 
@@ -191,6 +197,13 @@ export default function Home() {
             [platform]: prev[platform] + textChunk,
           }));
         },
+        onHumanizeStart: () => {
+          // 人性化阶段开始：只重置底层数据，保留预览区显示 AI 原始内容
+          setIsHumanizing(true);
+          isHumanizingRef.current = true;
+          setRawMarkdowns((prev) => ({ ...prev, [platform]: '' }));
+          setSuggestedImagesMap((prev) => ({ ...prev, [platform]: [] }));
+        },
         onMeta: (theme, suggestedImages) => {
           if (theme && ['tech', 'emotion', 'neutral', 'xiaohongshu', 'news', 'vlog'].includes(theme)) {
             setCurrentThemes((prev) => ({ ...prev, [platform]: theme as ThemeType }));
@@ -203,10 +216,12 @@ export default function Home() {
           }
         },
         onDone: () => {
-          // 完成回调，流终点状态已在 hook 中处理
+          setIsHumanizing(false);
+          isHumanizingRef.current = false;
         },
       },
-      currentTemplate?.systemPrompt // 传入当前选定主编风格的 Prompt 设定说明
+      currentTemplate?.systemPrompt, // 传入当前选定主编风格的 Prompt 设定说明
+      humanize // 传入人性化开关状态
     );
   };
 
@@ -302,6 +317,8 @@ export default function Home() {
         isProcessing={isProcessing}
         onGenerate={handleFormat}
         hasInput={!!inputText.trim()}
+        humanize={humanize}
+        onHumanizeChange={setHumanize}
         selectedTemplateName={
           currentTemplate ? `${currentTemplate.icon} ${currentTemplate.name}` : undefined
         }
@@ -371,6 +388,13 @@ export default function Home() {
               className={`bg-white shadow-2xl w-full h-full rounded-3xl border-4 border-gray-200/60 overflow-hidden relative flex flex-col transition-all duration-300 ${platform === 'video_script' ? 'max-w-[720px]' : 'max-w-[375px]'
                 }`}
             >
+              {/* 人性化状态指示条 */}
+              {isHumanizing && htmlOutput && (
+                <div className="absolute top-0 left-0 right-0 z-20 bg-amber-50/95 border-b border-amber-200 px-3 py-1.5 flex items-center justify-center gap-2 animate-in slide-in-from-top-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                  <span className="text-[10px] font-semibold text-amber-700">人性化改写中…</span>
+                </div>
+              )}
               {htmlOutput ? (
                 platform === 'xiaohongshu' ? (
                   <XiaohongshuPreview

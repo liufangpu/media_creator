@@ -4,6 +4,7 @@ import axios from 'axios';
 import { getWechatPrompt } from './platforms/wechat';
 import { getXiaohongshuPrompt } from './platforms/xiaohongshu';
 import { getVideoScriptPrompt } from './platforms/videoScript';
+import { getHumanizerSystemPrompt } from '@/lib/humanizer/prompt';
 
 /**
  * @file route.ts
@@ -45,7 +46,7 @@ const openai = new OpenAI({
 
 export async function POST(req: Request) {
   try {
-    const { text, polishLevel = 'none', platform = 'wechat', customPrompt } = await req.json();
+    const { text, polishLevel = 'none', platform = 'wechat', customPrompt, humanize = false } = await req.json();
 
     // 1. 基本安全审计校验与请求频度控制防护
     if (!text || !text.trim()) {
@@ -164,42 +165,28 @@ export async function POST(req: Request) {
           const metadataMatch = finalCleanMarkdown.match(metadataRegex);
           if (metadataMatch) {
             theme = metadataMatch[1].trim();
-            // 在最终正文文本中移除此系统级元数据标识，保持用户排版界面的整洁
             finalCleanMarkdown = finalCleanMarkdown.replace(metadataMatch[0], '').trim();
           }
 
-          // b. 智能图片占位符并发搜图检索
-          const suggestedImages: SuggestedImage[] = [];
+          // b. 智能图片占位符并发搜图检索（AI 生成阶段的配图）
+          let suggestedImages: SuggestedImage[] = [];
           if ((platform === 'wechat' || platform === 'xiaohongshu') && process.env.PEXELS_API_KEY) {
-            // 匹配文案中形如 [IMAGE_PLACEHOLDER: id | keyword] 的占位标签
             const imageRegex = /\[IMAGE_PLACEHOLDER:\s*(\d+)\s*\|\s*(.*?)\]/g;
             const matches = [...finalCleanMarkdown.matchAll(imageRegex)];
-
-            // 并发加速检索：限制前 4 张配图
             const searchPromises = matches.slice(0, 4).map(async (match) => {
               const fullTag = match[0];
               const id = match[1].trim();
               const keyword = match[2].trim();
-
-              // 如果是小红书，正文中的配图直接抹去（因为小红书采用的是顶部轮播封面图逻辑）
               if (platform === 'xiaohongshu') {
                 finalCleanMarkdown = finalCleanMarkdown.replace(fullTag, '');
               }
-
               try {
                 const orientation = platform === 'xiaohongshu' ? 'portrait' : 'landscape';
                 const pexelsRes = await axios.get(`https://api.pexels.com/v1/search`, {
-                  params: {
-                    query: keyword,
-                    per_page: 4,
-                    orientation: orientation,
-                  },
-                  headers: {
-                    Authorization: process.env.PEXELS_API_KEY,
-                  },
-                  timeout: 8000, // 8秒内响应，防阻塞
+                  params: { query: keyword, per_page: 4, orientation },
+                  headers: { Authorization: process.env.PEXELS_API_KEY },
+                  timeout: 8000,
                 });
-
                 if (pexelsRes.data.photos && pexelsRes.data.photos.length > 0) {
                   suggestedImages.push({
                     id,
@@ -217,8 +204,6 @@ export async function POST(req: Request) {
                 console.error(`Pexels API Error (Keyword: ${keyword}):`, imgErr);
               }
             });
-
-            // 等待所有异步图片检索结束
             await Promise.all(searchPromises);
           }
 
@@ -229,6 +214,95 @@ export async function POST(req: Request) {
             suggestedImages,
           })}\n\n`;
           controller.enqueue(encoder.encode(metaEvent));
+
+          // === 人性化后处理阶段：对 AI 生成内容进行"去 AI 味"改写 ===
+          if (humanize) {
+            // 发送人性化阶段开始信号，通知前端重置已积累的原始内容
+            const humanizeStartEvent = `data: ${JSON.stringify({ type: 'humanize_start' })}\n\n`;
+            controller.enqueue(encoder.encode(humanizeStartEvent));
+
+            const humanizerPrompt = getHumanizerSystemPrompt();
+            const humanizeStream = await openai.chat.completions.create({
+              model: process.env.OPENAI_MODEL || 'gpt-3.5-turbo',
+              messages: [
+                { role: 'system', content: humanizerPrompt },
+                { role: 'user', content: finalCleanMarkdown },
+              ],
+              temperature: 0.6,
+              stream: true,
+            });
+
+            let humanizedMarkdown = '';
+            for await (const chunk of humanizeStream) {
+              const content = chunk.choices[0]?.delta?.content || '';
+              if (content) {
+                humanizedMarkdown += content;
+                const sseLine = `data: ${JSON.stringify({ type: 'humanize_chunk', content })}\n\n`;
+                controller.enqueue(encoder.encode(sseLine));
+              }
+            }
+
+            // 从人性化后的内容中重新解析元数据
+            finalCleanMarkdown = humanizedMarkdown;
+            let humanizedTheme = platform === 'wechat' ? 'tech' : 'neutral';
+            const humanizedMetaMatch = finalCleanMarkdown.match(metadataRegex);
+            if (humanizedMetaMatch) {
+              humanizedTheme = humanizedMetaMatch[1].trim();
+              finalCleanMarkdown = finalCleanMarkdown.replace(humanizedMetaMatch[0], '').trim();
+            }
+
+            // 为人性化后的内容重新搜索配图（如果原阶段已搜到则复用）
+            const humanizedImageRegex = /\[IMAGE_PLACEHOLDER:\s*(\d+)\s*\|\s*(.*?)\]/g;
+            const humanizedHasPlaceholders = humanizedImageRegex.test(finalCleanMarkdown);
+            humanizedImageRegex.lastIndex = 0;
+
+            if (!humanizedHasPlaceholders && suggestedImages.length > 0) {
+              // 人性化后占位符被移除，保留原有配图推荐
+            } else if (humanizedHasPlaceholders && suggestedImages.length === 0 && process.env.PEXELS_API_KEY) {
+              // 原阶段未搜到图但人性化后仍有占位符，重新搜图
+              const matches = [...finalCleanMarkdown.matchAll(humanizedImageRegex)];
+              const searchPromises = matches.slice(0, 4).map(async (match) => {
+                const fullTag = match[0];
+                const id = match[1].trim();
+                const keyword = match[2].trim();
+                if (platform === 'xiaohongshu') {
+                  finalCleanMarkdown = finalCleanMarkdown.replace(fullTag, '');
+                }
+                try {
+                  const orientation = platform === 'xiaohongshu' ? 'portrait' : 'landscape';
+                  const pexelsRes = await axios.get(`https://api.pexels.com/v1/search`, {
+                    params: { query: keyword, per_page: 4, orientation },
+                    headers: { Authorization: process.env.PEXELS_API_KEY },
+                    timeout: 8000,
+                  });
+                  if (pexelsRes.data.photos && pexelsRes.data.photos.length > 0) {
+                    suggestedImages.push({
+                      id,
+                      keyword,
+                      options: pexelsRes.data.photos.map((p: PexelsPhoto) => ({
+                        id: p.id,
+                        url: platform === 'xiaohongshu' ? p.src.portrait : p.src.large,
+                        thumb: p.src.medium,
+                        photographer: p.photographer,
+                        page_url: p.url,
+                      })),
+                    });
+                  }
+                } catch (imgErr) {
+                  console.error(`Pexels API Error (Keyword: ${keyword}):`, imgErr);
+                }
+              });
+              await Promise.all(searchPromises);
+            }
+
+            // 发送人性化后的元数据
+            const humanizedMetaEvent = `data: ${JSON.stringify({
+              type: 'meta',
+              theme: humanizedTheme,
+              suggestedImages,
+            })}\n\n`;
+            controller.enqueue(encoder.encode(humanizedMetaEvent));
+          }
 
           // d. 发送完成标志帧
           const doneEvent = `data: ${JSON.stringify({ type: 'done' })}\n\n`;

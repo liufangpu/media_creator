@@ -18,6 +18,8 @@ export interface FormatCallbacks {
   onMeta: (theme: string, suggestedImages: any[]) => void;
   /** 当流成功传输完毕时的回调 */
   onDone: () => void;
+  /** 人性化阶段开始时触发，前端应重置已积累的内容 */
+  onHumanizeStart?: () => void;
 }
 
 export interface UseFormatReturn {
@@ -34,13 +36,15 @@ export interface UseFormatReturn {
    * @param platform 目标平台
    * @param callbacks 流式生命周期回调函数集合
    * @param customPrompt 可选的自定义主编设定的系统 Prompt
+   * @param humanize 是否启用人性化去 AI 味后处理
    */
   formatContentStream: (
     text: string,
     polishLevel: PolishLevel,
     platform: PlatformType,
     callbacks: FormatCallbacks,
-    customPrompt?: string
+    customPrompt?: string,
+    humanize?: boolean
   ) => Promise<boolean>;
 }
 
@@ -55,7 +59,8 @@ export const useFormat = (): UseFormatReturn => {
       polishLevel: PolishLevel,
       platform: PlatformType,
       callbacks: FormatCallbacks,
-      customPrompt?: string
+      customPrompt?: string,
+      humanize = false
     ): Promise<boolean> => {
       if (!text.trim()) {
         toast.error('请提供需要排版的草稿内容');
@@ -69,7 +74,7 @@ export const useFormat = (): UseFormatReturn => {
         const response = await fetch('/api/format', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, polishLevel, platform, customPrompt }),
+          body: JSON.stringify({ text, polishLevel, platform, customPrompt, humanize }),
         });
 
         if (!response.ok) {
@@ -119,6 +124,16 @@ export const useFormat = (): UseFormatReturn => {
                 switch (eventData.type) {
                   case 'chunk':
                     // 接收即时文本碎片并触发回调
+                    if (eventData.content) {
+                      callbacks.onChunk(eventData.content);
+                    }
+                    break;
+                  case 'humanize_start':
+                    // 人性化阶段开始，通知前端重置已积累的内容
+                    callbacks.onHumanizeStart?.();
+                    break;
+                  case 'humanize_chunk':
+                    // 接收人性化改写后的文本碎片
                     if (eventData.content) {
                       callbacks.onChunk(eventData.content);
                     }

@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { Sparkles, PenTool, Palette } from 'lucide-react';
+import { Sparkles, PenTool, Palette, UserCheck } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
 import { PlatformType, PolishLevel, ThemeType } from '@/types';
@@ -30,6 +30,10 @@ export interface HeaderProps {
   onGenerate: () => void;
   /** 输入区是否包含文本内容（用于禁用按钮） */
   hasInput: boolean;
+  /** 是否启用人性化去 AI 味处理 */
+  humanize: boolean;
+  /** 设置人性化开关回调 */
+  onHumanizeChange: (value: boolean) => void;
   /** 当前选中的模板名称 */
   selectedTemplateName?: string;
   /** 点击打开模板选择器的回调 */
@@ -45,6 +49,8 @@ export const Header: React.FC<HeaderProps> = ({
   isProcessing,
   onGenerate,
   hasInput,
+  humanize,
+  onHumanizeChange,
   selectedTemplateName,
   onOpenTemplateSelector,
 }) => {
@@ -108,7 +114,27 @@ export const Header: React.FC<HeaderProps> = ({
           />
         </div>
 
-        {/* 3. 微信风格定制（仅在微信平台激活时显示） */}
+        {/* 3. 人性化去 AI 味开关 */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+            人性化
+          </span>
+          <button
+            onClick={() => onHumanizeChange(!humanize)}
+            disabled={isProcessing}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl border transition-all cursor-pointer disabled:opacity-50 ${
+              humanize
+                ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100'
+                : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-gray-100'
+            }`}
+            title={humanize ? '已启用：生成后会进行去 AI 味改写' : '点击启用人性化去 AI 味后处理'}
+          >
+            <UserCheck className={`w-4 h-4 ${humanize ? 'text-amber-500' : 'text-gray-400'}`} />
+            {humanize ? '去AI味 ✓' : '去AI味'}
+          </button>
+        </div>
+
+        {/* 4. 微信风格定制（仅在微信平台激活时显示） */}
         {platform === 'wechat' && (
           <div className="flex items-center gap-2 animate-in fade-in duration-300">
             <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
